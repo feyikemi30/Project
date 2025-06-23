@@ -1,28 +1,40 @@
+import os
 import json
 from elasticsearch import Elasticsearch
 
-es = Elasticsearch(
-    "https://your-es-url",  
-    basic_auth=("your-username", "your-password"),  
-    verify_certs=True
-)
-
 def main():
-    indexing_timestamp = "2024-06-20T00:00:00Z"  
+    indexing_timestamp = "2024-06-20T00:00:00Z"
 
-    # Load Server Compliance Data
-    with open("files/server_compliance_reporting.json") as f:
-        transformed_data = json.load(f)
+    # ✅ Read credentials from environment variables
+    es_url = os.environ.get("ES_URL")
+    es_user = os.environ.get("ES_SERVICE_ID")
+    es_pass = os.environ.get("ES_PASSWORD")
+
+    if not es_url or not es_user or not es_pass:
+        print("❌ Missing Elasticsearch environment variables. Check ES_URL, ES_SERVICE_ID, and ES_PASSWORD.")
+        return
+
+    es = Elasticsearch(
+        es_url,
+        basic_auth=(es_user, es_pass),
+        verify_certs=True
+    )
+
+    # 📂 Load server compliance data
+    try:
+        with open("files/server_compliance_reporting.json") as f:
+            transformed_data = json.load(f)
+    except Exception as e:
+        print(f"[ERROR] Failed to load server compliance data: {e}")
+        return
 
     final_data = [record for record in transformed_data if record.get("appCode")]
-    print(f"Final record count after filtering invalid appCodes: {len(final_data)}")
+    print(f"[INFO] Final record count after filtering invalid appCodes: {len(final_data)}")
 
-    # Pre-fetch IIPM enrichment data
+    # 🔍 Fetch IIPM enrichment data
     iipm_query = {
         "query": {
-            "exists": {
-                "field": "appCode"
-            }
+            "exists": {"field": "appCode"}
         },
         "_source": [
             "appCode",
@@ -46,9 +58,9 @@ def main():
         for hit in iipm_results["hits"]["hits"]
     }
 
-    print(f"Fetched IIPM enrichment for {len(iipm_lookup)} appCodes")
+    print(f"[INFO] Fetched IIPM enrichment for {len(iipm_lookup)} appCodes")
 
-    # Enrich and Update Server Compliance Index
+    # 🔁 Enrich and update server compliance index
     for i, appcode_detail in enumerate(final_data):
         appCode = appcode_detail.get("appCode")
         appcode_detail["timestamp"] = indexing_timestamp
@@ -59,11 +71,11 @@ def main():
             for field in ["name", "lineOfBusiness", "contactPerson", "contactType", "contactMechanism"]:
                 if enrichment.get(field):
                     appcode_detail[field] = enrichment[field]
-            print(f"[ENRICHED] {appCode} with IIPM fields.")
+            print(f"[ENRICHED] {appCode}")
         else:
-            print(f"[SKIP] No IIPM data for {appCode}")
+            print(f"[SKIPPED] No IIPM data for {appCode}")
 
-        # Search for existing server compliance records
+        # Search for existing records
         search_query = {
             "query": {
                 "bool": {
@@ -82,7 +94,7 @@ def main():
             existing_records = response.get("hits", {}).get("hits", [])
 
             if not existing_records:
-                print(f"[NO MATCH] No server compliance record found for {appCode}")
+                print(f"[NO MATCH] No record found for {appCode}")
             else:
                 for record in existing_records:
                     record_id = record.get("_id")
